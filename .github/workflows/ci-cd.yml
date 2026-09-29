@@ -68,7 +68,7 @@ jobs:
             ghcr.io/trufflesecurity/trufflehog:3.97.5 \
             git file:///repo \
             --no-update --no-verification \
-            --results=verified,unknown,unverified \
+            --results=verified \
             --fail --fail-on-scan-errors --json \
             > "$RUNNER_TEMP/trufflehog-results.jsonl"
           scan_status=$?
