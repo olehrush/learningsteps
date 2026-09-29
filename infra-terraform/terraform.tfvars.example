@@ -1,0 +1,9 @@
+subscription_id   = "REPLACE_WITH_YOUR_SUBSCRIPTION_ID"
+prefix            = "lsstudent"
+location          = "westeurope"
+operator_ipv4_cidr = "203.0.113.10/32" # Replace with YOUR public IPv4, not this example.
+
+# Verify regional availability and quota BEFORE applying.
+aks_vm_size    = "Standard_D4s_v5"
+aks_node_count = 2
+postgres_sku   = "B_Standard_B1ms"

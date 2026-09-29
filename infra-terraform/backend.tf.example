@@ -1,0 +1,8 @@
+# Optional: rename to backend.tf AFTER independently creating the backend storage.
+# The backend must survive destruction of the LearningSteps resource group.
+# Authenticate with Azure CLI locally; use Entra/OIDC for a later infrastructure CI job.
+terraform {
+  backend "azurerm" {
+    use_azuread_auth = true
+  }
+}

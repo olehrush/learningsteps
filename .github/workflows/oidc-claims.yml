@@ -1,0 +1,46 @@
+name: Inspect GitHub OIDC claims
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    environment: dev
+    timeout-minutes: 5
+    steps:
+      - name: Display only issuer, subject and audience
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+
+          audience = urllib.parse.quote("api://AzureADTokenExchange", safe="")
+          endpoint = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+          separator = "&" if "?" in endpoint else "?"
+          request = urllib.request.Request(
+              endpoint + separator + "audience=" + audience,
+              headers={"Authorization": "Bearer " + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]},
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              token = json.load(response)["value"]
+          payload = token.split(".")[1]
+          claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+          # The token is decoded for setup diagnostics, never logged or saved.
+          # Azure validates its signature when the real login workflow runs.
+          summary = "## Values for the Azure federated credential\n\n"
+          for name in ("iss", "sub", "aud"):
+              value = claims[name]
+              print(f"{name}: {value}")
+              summary += f"- **{name}**: `{value}`\n"
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as stream:
+              stream.write(summary)
+          PY

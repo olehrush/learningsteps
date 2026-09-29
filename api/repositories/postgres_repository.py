@@ -23,7 +23,13 @@ class PostgresDB(DatabaseInterface):
         raise TypeError(f"Type {type(obj)} not serializable")
         
     async def __aenter__(self):
-        self.pool = await asyncpg.create_pool(DATABASE_URL)
+        self.pool = await asyncpg.create_pool(
+            DATABASE_URL,
+            min_size=1,
+            max_size=5,
+            timeout=5,
+            command_timeout=5,
+        )
         return self
 
     async def __aexit__(self, exc_type, exc_value, traceback):

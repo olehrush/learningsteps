@@ -1,0 +1,323 @@
+name: LearningSteps build, scan and deploy
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+# One dev environment: avoid two releases updating it simultaneously.
+concurrency:
+  group: learningsteps-dev
+  cancel-in-progress: false
+
+jobs:
+  build-scan-deploy:
+    runs-on: ubuntu-24.04
+    environment: dev
+    timeout-minutes: 60
+    env:
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      RESOURCE_GROUP: ${{ vars.RESOURCE_GROUP }}
+      AKS_NAME: ${{ vars.AKS_NAME }}
+      ACR_NAME: ${{ vars.ACR_NAME }}
+      ACR_LOGIN_SERVER: ${{ vars.ACR_LOGIN_SERVER }}
+      KEY_VAULT_NAME: ${{ vars.KEY_VAULT_NAME }}
+      WORKLOAD_CLIENT_ID: ${{ vars.WORKLOAD_CLIENT_ID }}
+      IMAGE_TAG: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+    steps:
+      - name: Checkout all reachable Git history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+
+      - name: Install application and test dependencies
+        run: python -m pip install -r api/requirements.txt -r requirements-test.txt
+
+      - name: Lint application and tests
+        run: python -m ruff check api tests --select E9,F63,F7,F82
+
+      - name: Test API behavior
+        run: python -m pytest -q tests
+
+      - name: Build the image once
+        run: docker build --pull --platform linux/amd64 -t "learningsteps:$IMAGE_TAG" .
+
+      - name: Test the built container against a temporary PostgreSQL database
+        run: bash scripts/test-image.sh "learningsteps:$IMAGE_TAG"
+
+      - name: Scan Git history for secrets
+        shell: bash
+        run: |
+          # Offline detection: do not send candidate credentials to verification APIs.
+          # Scan errors and detected results both fail this step.
+          set +e
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/repo:ro" \
+            ghcr.io/trufflesecurity/trufflehog:3.97.5 \
+            git file:///repo \
+            --no-update --no-verification \
+            --results=verified,unknown,unverified \
+            --fail --fail-on-scan-errors --json \
+            > "$RUNNER_TEMP/trufflehog-results.jsonl"
+          scan_status=$?
+          set -e
+          # Print finding locations, never the detected credential value.
+          python - <<'PY'
+          import json
+          import os
+          path = os.path.join(os.environ['RUNNER_TEMP'], 'trufflehog-results.jsonl')
+          count = 0
+          with open(path) as stream:
+              for line in stream:
+                  if not line.strip():
+                      continue
+                  result = json.loads(line)
+                  metadata = result.get('SourceMetadata', {}).get('Data', {}).get('Git', {})
+                  print(json.dumps({
+                      'detector': result.get('DetectorName'),
+                      'file': metadata.get('file'),
+                      'line': metadata.get('line'),
+                      'commit': metadata.get('commit'),
+                  }))
+                  count += 1
+          print(f'Detected secret candidates: {count}')
+          PY
+          rm -f "$RUNNER_TEMP/trufflehog-results.jsonl"
+          exit "$scan_status"
+
+      - name: Block HIGH and CRITICAL image vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.74.0
+          scan-type: image
+          image-ref: learningsteps:${{ env.IMAGE_TAG }}
+          scanners: vuln
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: '1'
+
+      - name: Block HIGH and CRITICAL Terraform misconfigurations
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.74.0
+          scan-type: config
+          scan-ref: infra-terraform
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          skip-setup-trivy: true
+
+      - name: Check required deployment settings
+        shell: bash
+        run: |
+          for setting in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
+            RESOURCE_GROUP AKS_NAME ACR_NAME ACR_LOGIN_SERVER KEY_VAULT_NAME WORKLOAD_CLIENT_ID; do
+            if [ -z "${!setting}" ]; then
+              echo "::error::Set the $setting variable in GitHub Settings > Environments > dev."
+              exit 1
+            fi
+          done
+
+      - name: Authenticate to Azure with GitHub OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Push the same tested and scanned image
+        shell: bash
+        run: |
+          az acr login --name "$ACR_NAME"
+          image_ref="$ACR_LOGIN_SERVER/learningsteps:$IMAGE_TAG"
+          docker tag "learningsteps:$IMAGE_TAG" "$image_ref"
+          docker push "$image_ref"
+          echo "IMAGE_REF=$image_ref" >> "$GITHUB_ENV"
+
+      - name: Discover the cluster's Kubernetes version
+        id: cluster
+        shell: bash
+        run: |
+          cluster_version=$(az aks show --resource-group "$RESOURCE_GROUP" --name "$AKS_NAME" --query currentKubernetesVersion -o tsv)
+          test -n "$cluster_version"
+          echo "version=v$cluster_version" >> "$GITHUB_OUTPUT"
+
+      - name: Install matching kubectl
+        uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5
+        with:
+          version: ${{ steps.cluster.outputs.version }}
+
+      - name: Install kubelogin
+        uses: azure/use-kubelogin@76597ae0fcbaace21b05e13a2cbf8daee2c6e820 # v1
+        with:
+          kubelogin-version: v0.2.19
+
+      - name: Temporarily authorize this runner's IP for the AKS API
+        id: api_access
+        timeout-minutes: 12
+        shell: bash
+        run: |
+          az aks show --resource-group "$RESOURCE_GROUP" --name "$AKS_NAME" \
+            --query apiServerAccessProfile.authorizedIpRanges -o json \
+            > "$RUNNER_TEMP/aks-original-ranges.json"
+          python - <<'PY'
+          import ipaddress
+          import json
+          import os
+          from pathlib import Path
+          import urllib.request
+
+          folder = Path(os.environ['RUNNER_TEMP'])
+          original = json.loads((folder / 'aks-original-ranges.json').read_text())
+          if not isinstance(original, list) or not original:
+              raise SystemExit('Expected the restricted Terraform baseline; no authorized IP ranges were found.')
+          networks = [ipaddress.ip_network(value, strict=True) for value in original]
+          if any(network.version != 4 or network.prefixlen == 0 for network in networks):
+              raise SystemExit('Expected IPv4 authorized ranges; an unrestricted /0 range is not allowed.')
+          with urllib.request.urlopen('https://api.ipify.org?format=json', timeout=30) as response:
+              runner_ip = ipaddress.ip_address(json.load(response)['ip'])
+          if runner_ip.version != 4 or not runner_ip.is_global:
+              raise SystemExit('IP discovery did not return a public IPv4 address.')
+          change_required = not any(runner_ip in network for network in networks)
+          updated = original + ([f'{runner_ip}/32'] if change_required else [])
+          if len(updated) > 200:
+              raise SystemExit('The API authorized-range limit would be exceeded.')
+          (folder / 'aks-runner-ranges.txt').write_text(','.join(updated))
+          (folder / 'aks-range-change-required.txt').write_text(str(change_required).lower())
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
+              stream.write(f'change_required={str(change_required).lower()}\n')
+          print(f'Runner IPv4: {runner_ip}; preserving {len(original)} existing range(s).')
+          PY
+          if [ "$(cat "$RUNNER_TEMP/aks-range-change-required.txt")" = 'false' ]; then
+            echo 'The runner is already in the allowed ranges; no temporary change is needed.'
+            exit 0
+          fi
+          # Record cleanup intent before the first mutation, including partial failures.
+          echo 'restore_required=true' >> "$GITHUB_OUTPUT"
+          updated_ranges=$(cat "$RUNNER_TEMP/aks-runner-ranges.txt")
+          az aks update --resource-group "$RESOURCE_GROUP" --name "$AKS_NAME" \
+            --api-server-authorized-ip-ranges "$updated_ranges" --no-wait --output none
+          az aks wait --resource-group "$RESOURCE_GROUP" --name "$AKS_NAME" \
+            --updated --interval 10 --timeout 600
+
+      - name: Get a non-admin AKS context
+        uses: azure/aks-set-context@60623acbdcbbdcf799ad50a1adf8703874339f8b # v5
+        with:
+          resource-group: ${{ vars.RESOURCE_GROUP }}
+          cluster-name: ${{ vars.AKS_NAME }}
+          admin: 'false'
+          use-kubelogin: 'true'
+
+      - name: Wait for authorized-range propagation and Kubernetes access
+        shell: bash
+        run: |
+          for attempt in $(seq 1 18); do
+            if kubectl --request-timeout=10s get deployment learningsteps \
+              -n learningsteps --ignore-not-found >/dev/null; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo '::error::AKS API access was not ready. Check runner IP, role assignments and cluster status.'
+          exit 1
+
+      - name: Render and apply the verified application release
+        shell: bash
+        run: |
+          python scripts/render-manifests.py
+          # Namespace, ServiceAccount and SecretProviderClass were bootstrapped
+          # by the operator. This job is scoped to the application namespace.
+          kubectl apply -n learningsteps -f k8s-rendered/app.yaml
+          kubectl rollout status deployment/learningsteps -n learningsteps --timeout=300s
+
+      - name: Verify the public API
+        shell: bash
+        run: |
+          public_ip=''
+          for attempt in $(seq 1 30); do
+            public_ip=$(kubectl get service learningsteps -n learningsteps -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+            if [ -n "$public_ip" ]; then
+              break
+            fi
+            sleep 5
+          done
+          if [ -z "$public_ip" ]; then
+            echo '::error::The LoadBalancer Service has no public IP yet.'
+            exit 1
+          fi
+          python scripts/smoke_api.py --base-url "http://$public_ip"
+          echo "### Deployed LearningSteps" >> "$GITHUB_STEP_SUMMARY"
+          echo "- API documentation: http://$public_ip/docs" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Image: $IMAGE_REF" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Show workload status on failure
+        if: failure()
+        shell: bash
+        run: |
+          if command -v kubectl >/dev/null 2>&1 && [ -f "$HOME/.kube/config" ]; then
+            kubectl --request-timeout=15s get pods,deployments,services,hpa -n learningsteps || true
+          fi
+
+      - name: Restore the original AKS API authorized IP ranges
+        if: ${{ always() && steps.api_access.outputs.restore_required == 'true' }}
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          original_ranges=$(python - <<'PY'
+          import ipaddress
+          import json
+          import os
+          from pathlib import Path
+          original = json.loads((Path(os.environ['RUNNER_TEMP']) / 'aks-original-ranges.json').read_text())
+          if not isinstance(original, list) or not original:
+              raise SystemExit('Refusing to restore an empty authorized-range list.')
+          for value in original:
+              network = ipaddress.ip_network(value, strict=True)
+              if network.version != 4 or network.prefixlen == 0:
+                  raise SystemExit('Refusing to restore an unrestricted or invalid range.')
+          print(','.join(original))
+          PY
+          )
+          # A previous update may still be settling after a failed deployment.
+          restore_started=false
+          for attempt in $(seq 1 12); do
+            if az aks update --resource-group "$RESOURCE_GROUP" --name "$AKS_NAME" \
+              --api-server-authorized-ip-ranges "$original_ranges" --no-wait --output none; then
+              restore_started=true
+              break
+            fi
+            sleep 15
+          done
+          if [ "$restore_started" != true ]; then
+            echo '::error::Could not restore AKS authorized ranges. Reapply the reviewed Terraform baseline from the operator machine.'
+            exit 1
+          fi
+          az aks wait --resource-group "$RESOURCE_GROUP" --name "$AKS_NAME" \
+            --updated --interval 10 --timeout 600
+          az aks show --resource-group "$RESOURCE_GROUP" --name "$AKS_NAME" \
+            --query apiServerAccessProfile.authorizedIpRanges -o json \
+            > "$RUNNER_TEMP/aks-restored-ranges.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          folder = Path(os.environ['RUNNER_TEMP'])
+          original = json.loads((folder / 'aks-original-ranges.json').read_text())
+          restored = json.loads((folder / 'aks-restored-ranges.json').read_text())
+          if sorted(original) != sorted(restored):
+              raise SystemExit('AKS ranges do not match the saved baseline; operator recovery is required.')
+          print('Original authorized IP ranges restored and verified.')
+          PY

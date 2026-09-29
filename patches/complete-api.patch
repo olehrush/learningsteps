@@ -1,0 +1,164 @@
+diff --git a/api/main.py b/api/main.py
+index 462854a..d681fc9 100644
+--- a/api/main.py
++++ b/api/main.py
+@@ -1,23 +1,49 @@
+-from fastapi import FastAPI
++import asyncio
++import logging
++import os
++
++from fastapi import FastAPI, HTTPException
+ from fastapi.responses import RedirectResponse
+ from dotenv import load_dotenv
++from repositories.postgres_repository import PostgresDB
+ from routers.journal_router import router as journal_router
+-import logging
+ 
+ load_dotenv()
+ 
+-# TODO: Setup basic console logging
+-# Hint: Use logging.basicConfig() with level=logging.INFO
+-# Steps:
+-# 1. Configure logging with basicConfig()
+-# 2. Set level to logging.INFO
+-# 3. Add console handler
+-# 4. Test by adding a log message when the app starts
++logging.basicConfig(
++    level=os.getenv("APP_LOG_LEVEL", "INFO").upper(),
++    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
++)
++logger = logging.getLogger("journal")
+ 
+ app = FastAPI(title="LearningSteps API", description="A simple learning journal API for tracking daily work, struggles, and intentions")
+ app.include_router(journal_router)
++logger.info("LearningSteps application initialized")
++
++
++@app.get("/health/live", include_in_schema=False)
++async def liveness():
++    """Check that the application responds, independently of PostgreSQL."""
++    return {"status": "ok"}
++
++
++async def check_database():
++    async with PostgresDB() as db:
++        async with db.pool.acquire() as connection:
++            await connection.fetchval("SELECT 1")
++
++
++@app.get("/health/ready", include_in_schema=False)
++async def readiness():
++    """Admit traffic only when the application can query PostgreSQL."""
++    try:
++        await asyncio.wait_for(check_database(), timeout=3.0)
++    except Exception:
++        logger.warning("Database readiness check failed")
++        raise HTTPException(status_code=503, detail="Database unavailable")
++    return {"status": "ready"}
+ 
+ 
+ @app.get("/", include_in_schema=False)
+ def root():
+-    return RedirectResponse(url="/docs")
+\ No newline at end of file
++    return RedirectResponse(url="/docs")
+diff --git a/api/repositories/postgres_repository.py b/api/repositories/postgres_repository.py
+index ca47114..7db81d8 100644
+--- a/api/repositories/postgres_repository.py
++++ b/api/repositories/postgres_repository.py
+@@ -23,7 +23,13 @@ class PostgresDB(DatabaseInterface):
+         raise TypeError(f"Type {type(obj)} not serializable")
+         
+     async def __aenter__(self):
+-        self.pool = await asyncpg.create_pool(DATABASE_URL)
++        self.pool = await asyncpg.create_pool(
++            DATABASE_URL,
++            min_size=1,
++            max_size=5,
++            timeout=5,
++            command_timeout=5,
++        )
+         return self
+ 
+     async def __aexit__(self, exc_type, exc_value, traceback):
+diff --git a/api/routers/journal_router.py b/api/routers/journal_router.py
+index 2becd60..cb78d04 100644
+--- a/api/routers/journal_router.py
++++ b/api/routers/journal_router.py
+@@ -50,17 +50,11 @@ async def get_all_entries(entry_service: EntryService = Depends(get_entry_servic
+ 
+ @router.get("/entries/{entry_id}")
+ async def get_entry(request: Request, entry_id: str, entry_service: EntryService = Depends(get_entry_service)):
+-    """
+-    TODO: Implement this endpoint to return a single journal entry by ID
+-    
+-    Steps to implement:
+-    1. Use the entry_service to get the entry by ID
+-    2. Return 404 if entry not found
+-    3. Return the entry as JSON if found
+-    
+-    Hint: Check the update_entry endpoint for similar patterns
+-    """
+-    raise HTTPException(status_code=501, detail="Not implemented - complete this endpoint!")
++    """Return one journal entry, or 404 when the ID does not exist."""
++    entry = await entry_service.get_entry(entry_id)
++    if entry is None:
++        raise HTTPException(status_code=404, detail="Entry not found")
++    return entry
+ 
+ @router.patch("/entries/{entry_id}")
+ async def update_entry(entry_id: str, entry_update: dict, entry_service: EntryService = Depends(get_entry_service)):
+@@ -72,25 +66,17 @@ async def update_entry(entry_id: str, entry_update: dict, entry_service: EntrySe
+     
+     return result
+ 
+-# TODO: Implement DELETE /entries/{entry_id} endpoint to remove a specific entry
+-# Return 404 if entry not found
+ @router.delete("/entries/{entry_id}")
+ async def delete_entry(entry_id: str, entry_service: EntryService = Depends(get_entry_service)):
+-    """
+-    TODO: Implement this endpoint to delete a specific journal entry
+-    
+-    Steps to implement:
+-    1. Check if the entry exists first
+-    2. Delete the entry using entry_service
+-    3. Return appropriate response
+-    4. Return 404 if entry not found
+-    
+-    Hint: Look at how the update_entry endpoint checks for existence
+-    """
+-    raise HTTPException(status_code=501, detail="Not implemented - complete this endpoint!")
++    """Delete one journal entry, or return 404 when the ID does not exist."""
++    entry = await entry_service.get_entry(entry_id)
++    if entry is None:
++        raise HTTPException(status_code=404, detail="Entry not found")
++    await entry_service.delete_entry(entry_id)
++    return {"detail": "Entry deleted successfully"}
+ 
+ @router.delete("/entries")
+ async def delete_all_entries(entry_service: EntryService = Depends(get_entry_service)):
+     """Delete all journal entries"""
+     await entry_service.delete_all_entries()
+-    return {"detail": "All entries deleted"}
+\ No newline at end of file
++    return {"detail": "All entries deleted"}
+diff --git a/api/services/entry_service.py b/api/services/entry_service.py
+index 0b38b1e..24c2a10 100644
+--- a/api/services/entry_service.py
++++ b/api/services/entry_service.py
+@@ -49,6 +49,7 @@ class EntryService:
+             return None
+ 
+         updated_data = {
++            **existing_entry,
+             **updated_data,
+             "id": entry_id,
+             "updated_at": datetime.now(timezone.utc),
+@@ -68,4 +69,4 @@ class EntryService:
+         """Deletes all entries."""
+         logger.info("Deleting all entries")
+         await self.db.delete_all_entries()
+-        logger.debug("All entries deleted")
+\ No newline at end of file
++        logger.debug("All entries deleted")

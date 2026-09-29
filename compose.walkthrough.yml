@@ -1,0 +1,28 @@
+services:
+  postgres:
+    image: postgres:16-bookworm
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?Create .env.local first}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Create .env.local first}
+      POSTGRES_DB: ${POSTGRES_DB:?Create .env.local first}
+    volumes:
+      - learningsteps_data:/var/lib/postgresql/data
+      - ./database_setup.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+  api:
+    build: .
+    image: learningsteps:local
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Create .env.local first}
+      APP_LOG_LEVEL: INFO
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+volumes:
+  learningsteps_data:

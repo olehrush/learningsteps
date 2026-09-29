@@ -1,0 +1,6 @@
+# Pass the real copied file to terraform init -migrate-state -backend-config=backend.hcl.
+# Create these backend resources OUTSIDE this Terraform stack first.
+resource_group_name  = "REPLACE_WITH_BACKEND_RESOURCE_GROUP"
+storage_account_name = "REPLACE_WITH_BACKEND_STORAGE_ACCOUNT"
+container_name       = "tfstate"
+key                  = "learningsteps.tfstate"

@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: learningsteps
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: learningsteps-sa
+  namespace: learningsteps
+  annotations:
+    azure.workload.identity/client-id: "$WORKLOAD_CLIENT_ID"
+---
+apiVersion: secrets-store.csi.x-k8s.io/v1
+kind: SecretProviderClass
+metadata:
+  name: learningsteps-keyvault
+  namespace: learningsteps
+spec:
+  provider: azure
+  secretObjects:
+    - secretName: learningsteps-db
+      type: Opaque
+      data:
+        - objectName: DATABASE-URL
+          key: DATABASE_URL
+  parameters:
+    usePodIdentity: "false"
+    clientID: "$WORKLOAD_CLIENT_ID"
+    keyvaultName: "$KEY_VAULT_NAME"
+    tenantId: "$AZURE_TENANT_ID"
+    objects: |
+      array:
+        - |
+          objectName: DATABASE-URL
+          objectType: secret
+          objectVersion: ""

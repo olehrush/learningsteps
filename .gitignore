@@ -169,3 +169,20 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# LearningSteps walkthrough: append this block to the existing .gitignore.
+.env.local
+.env.cloud
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+infra-terraform/.terraform/
+infra-terraform/*.tfstate*
+infra-terraform/*.tfplan
+infra-terraform/tfplan
+infra-terraform/*.tfvars
+infra-terraform/backend.hcl
+k8s-rendered/
+scan-results/
+# Commit .terraform.lock.hcl; it pins provider selections.

@@ -49,6 +49,7 @@ class EntryService:
             return None
 
         updated_data = {
+            **existing_entry,
             **updated_data,
             "id": entry_id,
             "updated_at": datetime.now(timezone.utc),

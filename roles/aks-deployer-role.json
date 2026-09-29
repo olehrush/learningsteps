@@ -1,0 +1,16 @@
+{
+  "Name": "LearningSteps GitHub AKS Deployer",
+  "IsCustom": true,
+  "Description": "Read an AKS cluster, retrieve user credentials, and update cluster configuration for temporary runner IP authorization.",
+  "Actions": [
+    "Microsoft.ContainerService/managedClusters/read",
+    "Microsoft.ContainerService/managedClusters/write",
+    "Microsoft.ContainerService/managedClusters/listClusterUserCredential/action"
+  ],
+  "NotActions": [],
+  "DataActions": [],
+  "NotDataActions": [],
+  "AssignableScopes": [
+    "/subscriptions/REPLACE_SUBSCRIPTION_ID/resourceGroups/REPLACE_RESOURCE_GROUP"
+  ]
+}
