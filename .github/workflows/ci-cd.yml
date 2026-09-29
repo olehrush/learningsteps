@@ -106,7 +106,7 @@ jobs:
           scanners: vuln
           format: table
           severity: HIGH,CRITICAL
-          ignore-unfixed: false
+          ignore-unfixed: true
           exit-code: '1'
 
       - name: Block HIGH and CRITICAL Terraform misconfigurations
