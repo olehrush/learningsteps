@@ -258,6 +258,7 @@ jobs:
             echo '::error::The LoadBalancer Service has no public IP yet.'
             exit 1
           fi
+          sleep 20
           python scripts/smoke_api.py --base-url "http://$public_ip"
           echo "### Deployed LearningSteps" >> "$GITHUB_STEP_SUMMARY"
           echo "- API documentation: http://$public_ip/docs" >> "$GITHUB_STEP_SUMMARY"
