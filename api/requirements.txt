@@ -5,3 +5,4 @@ aiohttp
 sqlalchemy
 psycopg2-binary
 asyncpg
+requests==2.0.0
