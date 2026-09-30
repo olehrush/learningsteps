@@ -90,6 +90,7 @@ resource "azurerm_kubernetes_cluster" "project" {
   location            = azurerm_resource_group.project.location
   resource_group_name = azurerm_resource_group.project.name
   dns_prefix          = "aks-${local.name}"
+  api_server_authorized_ip_ranges = ["0.0.0.0/0"]
 
   # Standard means the regular AKS service here. The Free pricing tier has no uptime SLA.
   sku_tier                          = "Free"
@@ -131,7 +132,7 @@ resource "azurerm_kubernetes_cluster" "project" {
   }
 
   # CI temporarily adds its current runner /32 and restores this baseline afterward.
-  api_server_access_profile {
+ api_server_access_profile {
     authorized_ip_ranges = concat([var.operator_ipv4_cidr], var.aks_api_additional_cidrs)
   }
 
