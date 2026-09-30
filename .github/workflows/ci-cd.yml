@@ -244,35 +244,32 @@ jobs:
           kubectl rollout status deployment/learningsteps -n learningsteps --timeout=300s
 
       - name: Verify the public API
-          shell: bash
-          run: |
-            public_ip=''
-            for attempt in $(seq 1 30); do
-              public_ip=$(kubectl get service learningsteps -n learningsteps -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-              if [ -n "$public_ip" ]; then
-                break
-              fi
-              sleep 5
-            done
-            if [ -z "$public_ip" ]; then
-              echo '::error::The LoadBalancer Service has no public IP yet.'
-              exit 1
+        shell: bash
+        run: |
+          public_ip=''
+          for attempt in $(seq 1 30); do
+            public_ip=$(kubectl get service learningsteps -n learningsteps -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+            if [ -n "$public_ip" ]; then
+              break
             fi
-            sleep 20
-            python scripts/smoke_api.py --base-url "http://$public_ip"
-            echo "### Deployed LearningSteps" >> "$GITHUB_STEP_SUMMARY"
-            echo "- API documentation: http://$public_ip/docs" >> "$GITHUB_STEP_SUMMARY"
-            echo "- Image: $IMAGE_REF" >> "$GITHUB_STEP_SUMMARY"
+            sleep 5
+          done
+          if [ -z "$public_ip" ]; then
+            echo '::error::The LoadBalancer Service has no public IP yet.'
+            exit 1
+          fi
+          python scripts/smoke_api.py --base-url "http://$public_ip"
+          echo "### Deployed LearningSteps" >> "$GITHUB_STEP_SUMMARY"
+          echo "- API documentation: http://$public_ip/docs" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Image: $IMAGE_REF" >> "$GITHUB_STEP_SUMMARY"
 
-
-            
-            - name: Show workload status on failure
-              if: failure()
-              shell: bash
-              run: |
-                if command -v kubectl >/dev/null 2>&1 && [ -f "$HOME/.kube/config" ]; then
-                  kubectl --request-timeout=15s get pods,deployments,services,hpa -n learningsteps || true
-                fi
+      - name: Show workload status on failure
+        if: failure()
+        shell: bash
+        run: |
+          if command -v kubectl >/dev/null 2>&1 && [ -f "$HOME/.kube/config" ]; then
+            kubectl --request-timeout=15s get pods,deployments,services,hpa -n learningsteps || true
+          fi
 
       - name: Restore the original AKS API authorized IP ranges
         if: ${{ always() && steps.api_access.outputs.restore_required == 'true' }}
