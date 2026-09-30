@@ -16,7 +16,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("journal")
 
-app = FastAPI(title="LearningSteps API", description="A simple learning journal API for tracking daily work, struggles, and intentions")
+app = FastAPI(title="LearningSteps API - Release 2 Olehs Limited Edition", description="A simple learning journal API for tracking daily work, struggles, and intentions")
 app.include_router(journal_router)
 logger.info("LearningSteps application initialized")
 
