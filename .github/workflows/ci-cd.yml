@@ -243,7 +243,15 @@ jobs:
           kubectl apply -n learningsteps -f k8s-rendered/app.yaml
           kubectl rollout status deployment/learningsteps -n learningsteps --timeout=300s
 
+      - name: Wait for LoadBalancer endpoints
+        run: sleep 20
+
       - name: Verify the public API
+        run: python scripts/smoke_api.py
+
+
+
+
         shell: bash
         run: |
           public_ip=''
